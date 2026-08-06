@@ -223,7 +223,13 @@ async def delete_event(event_id):
         await db.execute('UPDATE events SET is_active = 0 WHERE id = ?', (event_id,))
         await db.commit()
 
+ALLOWED_EVENT_FIELDS = {
+    'title', 'description', 'date_time', 'price', 'photo_id', 'join_link', 'location'
+}
+
 async def update_event_field(event_id, field_name, new_value):
+    if field_name not in ALLOWED_EVENT_FIELDS:
+        raise ValueError(f"Недопустимое поле для обновления: {field_name}")
     async with aiosqlite.connect(DB_PATH) as db:
         query = f"UPDATE events SET {field_name} = ? WHERE id = ?"
         await db.execute(query, (new_value, event_id))

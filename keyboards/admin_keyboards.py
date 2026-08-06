@@ -1,5 +1,7 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
+import text_constants as txt
+
 def get_confirm_keyboard():
     buttons = [
         [InlineKeyboardButton(text="✅ Опубликовать", callback_data="save_event")],
@@ -18,9 +20,9 @@ def get_check_payment_keyboard(registration_id: int):
 
 def get_admin_main_kb():
     keyboard = [
-        [KeyboardButton(text="➕ Создать мероприятие"), KeyboardButton(text="🗑 Удалить мероприятие")],
-        [KeyboardButton(text="📋 Мои афиши"), KeyboardButton(text="📊 Статистика")],
-        [KeyboardButton(text="👥 Списки участников"), KeyboardButton(text="⚙️ Настройки")]
+        [KeyboardButton(text=txt.BTN_NEW_EVENT), KeyboardButton(text=txt.BTN_DELETE_EVENT)],
+        [KeyboardButton(text=txt.BTN_MY_EVENTS_LIST), KeyboardButton(text=txt.BTN_STATS)],
+        [KeyboardButton(text=txt.BTN_GUEST_LISTS), KeyboardButton(text=txt.BTN_SETTINGS)]
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 

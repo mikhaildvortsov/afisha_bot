@@ -1,9 +1,11 @@
+import logging
+import re
+
 from aiogram import Router, F, Bot
 from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-import re
 
 from config import ADMIN_IDS
 from database import add_user, get_active_events, get_event, create_registration, update_user_email, get_user, get_user_registrations, cancel_registration, is_user_registered, get_payment_text
@@ -11,12 +13,31 @@ from keyboards.user_keyboards import get_main_keyboard, get_event_keyboard, get_
 from keyboards.admin_keyboards import get_check_payment_keyboard, get_admin_main_kb, get_support_reply_keyboard
 import text_constants as txt
 
+logger = logging.getLogger(__name__)
+
 router = Router()
+
+EMAIL_REGEX = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+
 
 class RegistrationStates(StatesGroup):
     waiting_for_email = State()
     waiting_for_email_confirmation = State()
     waiting_for_receipt = State()
+
+
+def format_price(price: float) -> str:
+    return "Бесплатно" if price == 0 else f"{price} руб."
+
+
+def format_event_card(event) -> str:
+    return txt.EVENT_CARD_TEXT.format(
+        title=event['title'],
+        description=event['description'],
+        location=event['location'] if event['location'] else txt.ONLINE_LOCATION,
+        date_time=event['date_time'],
+        price_text=format_price(event['price']),
+    )
 
 async def finalize_registration(message_obj: Message, state: FSMContext, bot: Bot, event_id: int, user_id: int, username: str, full_name: str):
     event = await get_event(event_id)
@@ -28,7 +49,7 @@ async def finalize_registration(message_obj: Message, state: FSMContext, bot: Bo
     if event['price'] == 0:
         await create_registration(user_id, event_id, status="approved", amount=0)
         
-        join_link = event['join_link'] if event['join_link'] else "Ссылка не указана"
+        join_link = event['join_link'] if event['join_link'] else txt.NO_LINK
         
         await message_obj.answer(
             txt.REGISTRATION_APPROVED_FREE.format(title=event['title'], join_link=join_link),
@@ -40,14 +61,14 @@ async def finalize_registration(message_obj: Message, state: FSMContext, bot: Bo
         for admin_id in ADMIN_IDS:
             try:
                 await bot.send_message(
-                    admin_id, 
+                    admin_id,
                     txt.NEW_FREE_REGISTRATION_ADMIN.format(
                         user_display=user_display,
                         title=event['title']
                     )
                 )
-            except:
-                pass
+            except Exception as e:
+                logger.warning("Не удалось уведомить админа %s: %s", admin_id, e)
         await state.clear()
     else:
         await state.set_state(RegistrationStates.waiting_for_receipt)
@@ -90,8 +111,8 @@ async def process_support_message(message: Message, state: FSMContext, bot: Bot)
                 parse_mode="HTML"
             )
         except Exception as e:
-            print(f"Не удалось отправить сообщение админу {admin_id}: {e}")
-        
+            logger.warning("Не удалось отправить сообщение админу %s: %s", admin_id, e)
+
     await message.answer(txt.SUPPORT_MESSAGE_SENT)
     await state.clear()
 
@@ -105,7 +126,7 @@ async def command_start(message: Message):
     
     if message.from_user.id in ADMIN_IDS:
         await message.answer(
-            "👋 Привет, Админ! Выбери действие в меню:",
+            txt.WELCOME_ADMIN,
             reply_markup=get_admin_main_kb()
         )
     else:
@@ -114,7 +135,7 @@ async def command_start(message: Message):
             reply_markup=get_main_keyboard()
         )
 
-@router.message(F.text == "📅 Афиша")
+@router.message(F.text == txt.BTN_AFISHA)
 async def show_afisha(message: Message):
     events = await get_active_events()
     
@@ -123,20 +144,20 @@ async def show_afisha(message: Message):
         return
 
     await message.answer(
-        "Выберите мероприятие:",
+        txt.CHOOSE_EVENT,
         reply_markup=get_events_list_keyboard(events)
     )
 
-@router.message(F.text == "🎫 Мои записи")
+@router.message(F.text == txt.BTN_MY_REGISTRATIONS)
 async def show_my_registrations(message: Message):
     events = await get_user_registrations(message.from_user.id)
-    
+
     if not events:
-        await message.answer("У вас нет активных записей на мероприятия.")
+        await message.answer(txt.NO_MY_REGISTRATIONS)
         return
 
     await message.answer(
-        "Мероприятия, на которые вы записаны:",
+        txt.MY_REGISTRATIONS_LIST,
         reply_markup=get_events_list_keyboard(events, callback_prefix="my_event_")
     )
 
@@ -145,32 +166,20 @@ async def process_show_event(callback: CallbackQuery):
     try:
         event_id = int(callback.data.split("_")[2])
     except (ValueError, IndexError):
-        await callback.answer("Ошибка данных.", show_alert=True)
+        await callback.answer(txt.ERROR_DATA, show_alert=True)
         return
 
     event = await get_event(event_id)
-    
+
     if not event:
         await callback.answer(txt.EVENT_NOT_FOUND, show_alert=True)
         return
 
-    price_text = "Бесплатно" if event['price'] == 0 else f"{event['price']} руб."
-    location_text = event['location'] if event['location'] else "Онлайн"
-    
-    text = (
-        f"✨ {event['title']}\n"
-        f"📝 {event['description']}\n"
-        f"📍 Где: {location_text}\n"
-        f"📅 Когда: {event['date_time']}\n"
-        f"💰 Цена: {price_text}\n"
-        f"👇 Жми кнопку ниже, чтобы записаться!"
-    )
-    
     is_registered = await is_user_registered(callback.from_user.id, event_id)
-    
+
     await callback.message.answer_photo(
         photo=event['photo_id'],
-        caption=text,
+        caption=format_event_card(event),
         reply_markup=get_event_keyboard(event['id'], is_registered=is_registered),
         parse_mode="HTML"
     )
@@ -181,37 +190,24 @@ async def process_show_my_event(callback: CallbackQuery):
     try:
         event_id = int(callback.data.split("_")[2])
     except (ValueError, IndexError):
-        await callback.answer("Ошибка данных.", show_alert=True)
+        await callback.answer(txt.ERROR_DATA, show_alert=True)
         return
 
     # Проверяем, что пользователь действительно записан
     is_registered = await is_user_registered(callback.from_user.id, event_id)
     if not is_registered:
-        await callback.answer("Вы больше не записаны на это мероприятие.", show_alert=True)
-        # Опционально: можно обновить список сообщением, но пока просто алерт
+        await callback.answer(txt.NOT_REGISTERED_ANYMORE, show_alert=True)
         return
 
     event = await get_event(event_id)
-    
+
     if not event:
         await callback.answer(txt.EVENT_NOT_FOUND, show_alert=True)
         return
 
-    price_text = "Бесплатно" if event['price'] == 0 else f"{event['price']} руб."
-    location_text = event['location'] if event['location'] else "Онлайн"
-    
-    text = (
-        f"✨ {event['title']}\n"
-        f"📝 {event['description']}\n"
-        f"📍 Где: {location_text}\n"
-        f"📅 Когда: {event['date_time']}\n"
-        f"💰 Цена: {price_text}\n"
-        f"👇 Жми кнопку ниже, чтобы записаться!"
-    )
-    
     await callback.message.answer_photo(
         photo=event['photo_id'],
-        caption=text,
+        caption=format_event_card(event),
         reply_markup=get_my_event_keyboard(event['id']),
         parse_mode="HTML"
     )
@@ -222,7 +218,7 @@ async def process_cancel_registration(callback: CallbackQuery, bot: Bot):
     try:
         event_id = int(callback.data.split("_")[2])
     except (ValueError, IndexError):
-        await callback.answer("Ошибка данных.", show_alert=True)
+        await callback.answer(txt.ERROR_DATA, show_alert=True)
         return
 
     # Получаем данные о мероприятии для уведомления админа
@@ -230,15 +226,15 @@ async def process_cancel_registration(callback: CallbackQuery, bot: Bot):
 
     await cancel_registration(callback.from_user.id, event_id)
     await callback.message.delete()
-    
+
     # Отправляем сообщение пользователю (вместо alert)
     if event:
         await callback.message.answer(txt.REGISTRATION_CANCELLED_USER.format(title=event['title']))
     else:
-        await callback.message.answer("Запись отменена.")
-    
+        await callback.message.answer(txt.REGISTRATION_CANCELLED_SIMPLE)
+
     await callback.answer()
-    
+
     # Уведомляем админов
     if event:
         user_display = f"@{callback.from_user.username}" if callback.from_user.username else callback.from_user.full_name
@@ -246,16 +242,16 @@ async def process_cancel_registration(callback: CallbackQuery, bot: Bot):
             user_display=user_display,
             title=event['title']
         )
-        
+
         for admin_id in ADMIN_IDS:
             try:
                 await bot.send_message(chat_id=admin_id, text=msg_text, parse_mode="HTML")
             except Exception as e:
-                print(f"Не удалось уведомить админа {admin_id}: {e}")
+                logger.warning("Не удалось уведомить админа %s: %s", admin_id, e)
 
 @router.callback_query(F.data == "dummy_callback")
 async def dummy_callback_handler(callback: CallbackQuery):
-    await callback.answer("Вы уже записаны на это мероприятие", show_alert=True)
+    await callback.answer(txt.ALREADY_REGISTERED, show_alert=True)
 
 @router.callback_query(F.data.startswith("enroll_"))
 async def process_enroll(callback: CallbackQuery, state: FSMContext, bot: Bot):
@@ -274,13 +270,14 @@ async def process_enroll(callback: CallbackQuery, state: FSMContext, bot: Bot):
     if user and user['email']:
         await state.set_state(RegistrationStates.waiting_for_email_confirmation)
         await callback.message.answer(
-            f"Ваш Email: {user['email']}\nВсё верно?",
+            txt.EMAIL_CONFIRM.format(email=user['email']),
             reply_markup=get_email_confirmation_keyboard()
         )
     else:
         await state.set_state(RegistrationStates.waiting_for_email)
-        await callback.message.answer("📧 Пожалуйста, введите ваш Email для связи:")
-        
+        await callback.message.answer(txt.EMAIL_PROMPT)
+
+
     await callback.answer()
 
 @router.callback_query(F.data == "confirm_email", RegistrationStates.waiting_for_email_confirmation)
@@ -291,9 +288,10 @@ async def confirm_email_handler(callback: CallbackQuery, state: FSMContext, bot:
     # Удаляем сообщение с вопросом "Всё верно?"
     try:
         await callback.message.delete()
-    except:
-        pass
-        
+    except Exception as e:
+        logger.warning("Не удалось удалить сообщение с подтверждением email: %s", e)
+
+
     await finalize_registration(callback.message, state, bot, event_id, callback.from_user.id, callback.from_user.username, callback.from_user.full_name)
     await callback.answer()
 
@@ -301,20 +299,18 @@ async def confirm_email_handler(callback: CallbackQuery, state: FSMContext, bot:
 async def change_email_handler(callback: CallbackQuery, state: FSMContext):
     await state.set_state(RegistrationStates.waiting_for_email)
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer("📧 Пожалуйста, введите новый Email:")
+    await callback.message.answer(txt.EMAIL_PROMPT_NEW)
     await callback.answer()
 
 @router.message(RegistrationStates.waiting_for_email)
 async def process_email(message: Message, state: FSMContext, bot: Bot):
     email = message.text.strip()
-    
-    # Строгая валидация email через регулярное выражение
-    email_regex = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
-    
-    if not re.match(email_regex, email):
-        await message.answer("⚠️ Некорректный формат email. Пример: example@mail.ru")
+
+    if not EMAIL_REGEX.match(email):
+        await message.answer(txt.EMAIL_INVALID)
         return
-        
+
+
     await update_user_email(message.from_user.id, email)
     
     data = await state.get_data()
@@ -346,7 +342,7 @@ async def process_receipt(message: Message, state: FSMContext, bot: Bot):
     )
 
     if reg_id is None:
-        await message.answer("Ошибка регистрации. Попробуйте нажать /start и повторить.")
+        await message.answer(txt.REGISTRATION_ERROR)
         await state.clear()
         return
         
@@ -370,5 +366,5 @@ async def process_receipt(message: Message, state: FSMContext, bot: Bot):
                 caption=caption,
                 reply_markup=get_check_payment_keyboard(reg_id)
             )
-        except:
-            pass
+        except Exception as e:
+            logger.warning("Не удалось отправить чек админу %s: %s", admin_id, e)

@@ -1,9 +1,11 @@
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
+import text_constants as txt
+
 def get_main_keyboard():
     keyboard = [
-        [KeyboardButton(text="📅 Афиша")],
-        [KeyboardButton(text="🎫 Мои записи")]
+        [KeyboardButton(text=txt.BTN_AFISHA)],
+        [KeyboardButton(text=txt.BTN_MY_REGISTRATIONS)]
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 

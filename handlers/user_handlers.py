@@ -8,7 +8,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 from config import ADMIN_IDS
-from database import add_user, get_active_events, get_event, create_registration, update_user_email, get_user, get_user_registrations, cancel_registration, is_user_registered, get_payment_text
+from database import (
+    add_user, get_active_events, get_event, create_registration, update_user_email, get_user,
+    get_user_registrations, cancel_registration, is_user_registered, get_payment_text,
+    get_event_registration_count, DuplicateRegistrationError,
+)
 from keyboards.user_keyboards import get_main_keyboard, get_event_keyboard, get_email_confirmation_keyboard, get_events_list_keyboard, get_my_event_keyboard
 from keyboards.admin_keyboards import get_check_payment_keyboard, get_admin_main_kb, get_support_reply_keyboard
 import text_constants as txt
@@ -39,6 +43,13 @@ def format_event_card(event) -> str:
         price_text=format_price(event['price']),
     )
 
+async def is_event_full(event) -> bool:
+    if not event['capacity']:
+        return False
+    count = await get_event_registration_count(event['id'])
+    return count >= event['capacity']
+
+
 async def finalize_registration(message_obj: Message, state: FSMContext, bot: Bot, event_id: int, user_id: int, username: str, full_name: str):
     event = await get_event(event_id)
     if not event:
@@ -46,16 +57,26 @@ async def finalize_registration(message_obj: Message, state: FSMContext, bot: Bo
         await state.clear()
         return
 
+    if await is_event_full(event):
+        await message_obj.answer(txt.EVENT_FULL)
+        await state.clear()
+        return
+
     if event['price'] == 0:
-        await create_registration(user_id, event_id, status="approved", amount=0)
-        
+        try:
+            await create_registration(user_id, event_id, status="approved", amount=0)
+        except DuplicateRegistrationError:
+            await message_obj.answer(txt.DUPLICATE_REGISTRATION)
+            await state.clear()
+            return
+
         join_link = event['join_link'] if event['join_link'] else txt.NO_LINK
-        
+
         await message_obj.answer(
             txt.REGISTRATION_APPROVED_FREE.format(title=event['title'], join_link=join_link),
             parse_mode="HTML"
         )
-        
+
         user_display = f"@{username}" if username else full_name
         
         for admin_id in ADMIN_IDS:
@@ -262,6 +283,10 @@ async def process_enroll(callback: CallbackQuery, state: FSMContext, bot: Bot):
         await callback.answer(txt.EVENT_NOT_FOUND, show_alert=True)
         return
 
+    if await is_event_full(event):
+        await callback.answer(txt.EVENT_FULL, show_alert=True)
+        return
+
     # Сохраняем event_id
     await state.update_data(event_id=event_id)
     
@@ -318,12 +343,23 @@ async def process_email(message: Message, state: FSMContext, bot: Bot):
     
     await finalize_registration(message, state, bot, event_id, message.from_user.id, message.from_user.username, message.from_user.full_name)
 
-@router.message(RegistrationStates.waiting_for_receipt, F.photo)
+@router.message(RegistrationStates.waiting_for_receipt, F.photo | F.document)
 async def process_receipt(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     event_id = data.get('event_id')
     event = await get_event(event_id)
-    photo_id = message.photo[-1].file_id
+    if not event:
+        await message.answer(txt.EVENT_NOT_FOUND)
+        await state.clear()
+        return
+
+    if await is_event_full(event):
+        await message.answer(txt.EVENT_FULL)
+        await state.clear()
+        return
+
+    is_document = message.document is not None
+    receipt_file_id = message.document.file_id if is_document else message.photo[-1].file_id
 
     # Убеждаемся, что пользователь есть в базе
     await add_user(
@@ -331,40 +367,53 @@ async def process_receipt(message: Message, state: FSMContext, bot: Bot):
         username=message.from_user.username,
         full_name=message.from_user.full_name
     )
-    
+
     # Создаем регистрацию со статусом pending
-    reg_id = await create_registration(
-        telegram_id=message.from_user.id,
-        event_id=event_id,
-        receipt_photo_id=photo_id,
-        status="pending",
-        amount=event['price']
-    )
+    try:
+        reg_id = await create_registration(
+            telegram_id=message.from_user.id,
+            event_id=event_id,
+            receipt_photo_id=receipt_file_id,
+            status="pending",
+            amount=event['price']
+        )
+    except DuplicateRegistrationError:
+        await message.answer(txt.DUPLICATE_REGISTRATION)
+        await state.clear()
+        return
 
     if reg_id is None:
         await message.answer(txt.REGISTRATION_ERROR)
         await state.clear()
         return
-        
+
     await message.answer(txt.RECEIPT_SENT)
     await state.clear()
-    
+
     # Отправляем админу
     user_display = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
-    
+
     caption = txt.NEW_PAID_REGISTRATION_ADMIN.format(
         user_display=user_display,
         title=event['title'],
         price=event['price']
     )
-    
+
     for admin_id in ADMIN_IDS:
         try:
-            await bot.send_photo(
-                chat_id=admin_id,
-                photo=photo_id,
-                caption=caption,
-                reply_markup=get_check_payment_keyboard(reg_id)
-            )
+            if is_document:
+                await bot.send_document(
+                    chat_id=admin_id,
+                    document=receipt_file_id,
+                    caption=caption,
+                    reply_markup=get_check_payment_keyboard(reg_id)
+                )
+            else:
+                await bot.send_photo(
+                    chat_id=admin_id,
+                    photo=receipt_file_id,
+                    caption=caption,
+                    reply_markup=get_check_payment_keyboard(reg_id)
+                )
         except Exception as e:
             logger.warning("Не удалось отправить чек админу %s: %s", admin_id, e)

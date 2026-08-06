@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from aiogram import Router, F, Bot
+from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -18,7 +19,7 @@ from keyboards.admin_keyboards import (
     get_edit_event_list_kb,
     get_edit_fields_kb
 )
-from database import add_event, update_registration_status, get_registration, get_users_count, get_active_events, delete_event, get_event_participants, get_event, get_all_users, get_bot_statistics, get_payment_text, update_payment_text, update_event_field
+from database import add_event, update_registration_status, get_registration, get_users_count, get_active_events, delete_event, get_event_participants, get_event, get_all_users, get_bot_statistics, get_payment_text, update_payment_text, update_event_field, mark_user_blocked
 import text_constants as txt
 from keyboards.user_keyboards import get_support_keyboard, get_event_keyboard
 
@@ -39,6 +40,7 @@ class EventStates(StatesGroup):
     waiting_for_location = State()
     waiting_for_datetime = State()
     waiting_for_price = State()
+    waiting_for_capacity = State()
     waiting_for_photo = State()
     waiting_for_link = State()
     waiting_for_confirmation = State()
@@ -170,6 +172,21 @@ async def process_price(message: Message, state: FSMContext):
         return
 
     await state.update_data(price=price)
+    await state.set_state(EventStates.waiting_for_capacity)
+    await message.answer(txt.NEW_EVENT_CAPACITY_PROMPT)
+
+@router.message(EventStates.waiting_for_capacity)
+async def process_capacity(message: Message, state: FSMContext):
+    raw = message.text.strip()
+    try:
+        capacity = int(raw)
+        if capacity < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer(txt.INVALID_NUMBER)
+        return
+
+    await state.update_data(capacity=capacity if capacity > 0 else None)
     await state.set_state(EventStates.waiting_for_photo)
     await message.answer(txt.NEW_EVENT_PHOTO_PROMPT)
 
@@ -227,7 +244,7 @@ async def save_event_handler(callback: CallbackQuery, state: FSMContext, bot: Bo
         # Не отправляем сообщение самому админу, который публикует
         if user['telegram_id'] == callback.from_user.id:
             continue
-            
+
         try:
             await bot.send_photo(
                 chat_id=user['telegram_id'],
@@ -237,9 +254,28 @@ async def save_event_handler(callback: CallbackQuery, state: FSMContext, bot: Bo
                 parse_mode="HTML"
             )
             count += 1
-        except Exception:
-            continue
-            
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+            try:
+                await bot.send_photo(
+                    chat_id=user['telegram_id'],
+                    photo=data['photo_id'],
+                    caption=caption,
+                    reply_markup=get_event_keyboard(event_id),
+                    parse_mode="HTML"
+                )
+                count += 1
+            except Exception as e2:
+                logger.warning("Не удалось отправить анонс %s после ретрая: %s", user['telegram_id'], e2)
+        except TelegramForbiddenError:
+            # Пользователь заблокировал бота — помечаем, чтобы не слать ему больше и не искажать статистику
+            await mark_user_blocked(user['telegram_id'])
+        except Exception as e:
+            logger.warning("Не удалось отправить анонс %s: %s", user['telegram_id'], e)
+
+        # Не превышаем лимит Telegram (~30 сообщений/сек)
+        await asyncio.sleep(0.05)
+
     msg = await callback.message.answer(txt.BROADCAST_DONE.format(count=count))
     await state.clear()
     await callback.answer()
@@ -519,6 +555,15 @@ async def process_new_field_value(message: Message, state: FSMContext):
         except ValueError:
             await message.answer(txt.INVALID_NUMBER)
             return
+    elif field_name == "capacity":
+        try:
+            capacity = int(message.text.strip())
+            if capacity < 0:
+                raise ValueError
+        except ValueError:
+            await message.answer(txt.INVALID_NUMBER)
+            return
+        new_value = capacity if capacity > 0 else None
     elif field_name == "join_link":
         new_value = message.text.strip()
         if new_value == "-":

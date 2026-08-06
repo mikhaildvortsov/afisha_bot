@@ -1,6 +1,10 @@
 import aiosqlite
 import datetime
+import logging
 import os
+import re
+
+logger = logging.getLogger(__name__)
 
 if os.path.exists('/data'):
     DB_PATH = '/data/database.db'
@@ -28,7 +32,14 @@ async def create_tables():
         except aiosqlite.OperationalError:
             # Колонка уже существует
             pass
-            
+
+        try:
+            await db.execute('ALTER TABLE users ADD COLUMN is_blocked BOOLEAN DEFAULT 0')
+            await db.commit()
+        except aiosqlite.OperationalError:
+            pass
+
+
         await db.execute('''
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,7 +65,14 @@ async def create_tables():
             await db.commit()
         except aiosqlite.OperationalError:
             pass
-            
+
+        try:
+            await db.execute('ALTER TABLE events ADD COLUMN capacity INTEGER')
+            await db.commit()
+        except aiosqlite.OperationalError:
+            pass
+
+
         await db.execute('''
             CREATE TABLE IF NOT EXISTS registrations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,7 +91,21 @@ async def create_tables():
             await db.commit()
         except aiosqlite.OperationalError:
             pass
-        
+
+        # Запрещаем повторную активную регистрацию одного пользователя на одно мероприятие
+        try:
+            await db.execute('''
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_active_registration
+                ON registrations(user_id, event_id)
+                WHERE status IN ('approved', 'pending')
+            ''')
+            await db.commit()
+        except aiosqlite.IntegrityError:
+            logger.warning(
+                "Не удалось создать уникальный индекс регистраций: в базе уже есть дубликаты. "
+                "Нужно вручную очистить повторные записи в таблице registrations."
+            )
+
         await db.execute('''
             CREATE TABLE IF NOT EXISTS bot_config (
                 key TEXT PRIMARY KEY,
@@ -85,26 +117,28 @@ async def create_tables():
     # Initialize settings
     await init_settings()
 
+PAYMENT_INFO_PLACEHOLDER = "⚠️ Реквизиты не настроены. Администратор должен указать их в разделе «⚙️ Настройки»."
+
+
 async def init_settings():
     async with aiosqlite.connect(DB_PATH) as db:
-        # Check if payment_info exists
         async with db.execute("SELECT value FROM bot_config WHERE key = 'payment_info'") as cursor:
             row = await cursor.fetchone()
-            
-            # Old default texts to identify if we need to update it
-            old_default_1 = "💳 Оплата участия\n\n💰 Сумма: {price} руб.\n\nПеревод на карту Сбербанка: [CARD_NUMBER_REMOVED] (Анна М.)\n\n📸 После оплаты пришлите скриншот чека в этот чат."
-            old_default_2 = "Перевод на карту Сбербанка: [CARD_NUMBER_REMOVED] (Анна М.)"
-            
-            new_default = "[CARD_NUMBER_REMOVED] (Анна М.)"
-            
-            if not row:
-                # If not exists, insert new default
-                await db.execute("INSERT INTO bot_config (key, value) VALUES (?, ?)", ('payment_info', new_default))
-                await db.commit()
-            elif row[0] == old_default_1 or row[0] == old_default_2:
-                # If exists but is old default, update to new default
-                await db.execute("UPDATE bot_config SET value = ? WHERE key = 'payment_info'", (new_default,))
-                await db.commit()
+
+        if not row:
+            await db.execute(
+                "INSERT INTO bot_config (key, value) VALUES (?, ?)",
+                ('payment_info', PAYMENT_INFO_PLACEHOLDER)
+            )
+            await db.commit()
+        elif row[0] and re.search(r'\d{16}', row[0]):
+            # В прежних версиях кода был зашит реальный номер карты как значение по умолчанию —
+            # вычищаем его из уже развёрнутых баз.
+            await db.execute(
+                "UPDATE bot_config SET value = ? WHERE key = 'payment_info'",
+                (PAYMENT_INFO_PLACEHOLDER,)
+            )
+            await db.commit()
 
 async def get_payment_text():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -128,7 +162,14 @@ async def add_user(telegram_id, username, full_name):
             )
             await db.commit()
         except aiosqlite.IntegrityError:
-            pass
+            # Пользователь уже есть — раз он снова пишет боту, он его точно не заблокировал
+            await db.execute('UPDATE users SET is_blocked = 0 WHERE telegram_id = ?', (telegram_id,))
+            await db.commit()
+
+async def mark_user_blocked(telegram_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('UPDATE users SET is_blocked = 1 WHERE telegram_id = ?', (telegram_id,))
+        await db.commit()
 
 async def get_user(telegram_id):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -147,16 +188,28 @@ async def update_user_email(telegram_id, email):
 async def add_event(data):
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute('''
-            INSERT INTO events (title, description, date_time, price, photo_id, join_link, location, is_active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (data['title'], data['description'], data['date_time'], data['price'], data['photo_id'], data.get('join_link'), data.get('location'), True))
+            INSERT INTO events (title, description, date_time, price, photo_id, join_link, location, capacity, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            data['title'], data['description'], data['date_time'], data['price'], data['photo_id'],
+            data.get('join_link'), data.get('location'), data.get('capacity'), True
+        ))
         await db.commit()
         return cursor.lastrowid
+
+async def get_event_registration_count(event_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute('''
+            SELECT COUNT(*) FROM registrations
+            WHERE event_id = ? AND status IN ('approved', 'pending')
+        ''', (event_id,)) as cursor:
+            result = await cursor.fetchone()
+            return result[0] if result else 0
 
 async def get_all_users():
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
-        async with db.execute('SELECT telegram_id FROM users') as cursor:
+        async with db.execute('SELECT telegram_id FROM users WHERE is_blocked = 0') as cursor:
             return await cursor.fetchall()
 
 async def get_user_registrations(telegram_id):
@@ -224,7 +277,7 @@ async def delete_event(event_id):
         await db.commit()
 
 ALLOWED_EVENT_FIELDS = {
-    'title', 'description', 'date_time', 'price', 'photo_id', 'join_link', 'location'
+    'title', 'description', 'date_time', 'price', 'photo_id', 'join_link', 'location', 'capacity'
 }
 
 async def update_event_field(event_id, field_name, new_value):
@@ -235,6 +288,10 @@ async def update_event_field(event_id, field_name, new_value):
         await db.execute(query, (new_value, event_id))
         await db.commit()
 
+class DuplicateRegistrationError(Exception):
+    """Пользователь уже имеет активную (pending/approved) регистрацию на это мероприятие."""
+
+
 async def create_registration(telegram_id, event_id, receipt_photo_id=None, status='pending', amount=0):
     async with aiosqlite.connect(DB_PATH) as db:
         # Get internal user id
@@ -243,13 +300,16 @@ async def create_registration(telegram_id, event_id, receipt_photo_id=None, stat
         if not user_row:
             return None
         internal_user_id = user_row[0]
-        
-        cursor = await db.execute('''
-            INSERT INTO registrations (user_id, event_id, receipt_photo_id, status, amount)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (internal_user_id, event_id, receipt_photo_id, status, amount))
-        await db.commit()
-        return cursor.lastrowid
+
+        try:
+            cursor = await db.execute('''
+                INSERT INTO registrations (user_id, event_id, receipt_photo_id, status, amount)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (internal_user_id, event_id, receipt_photo_id, status, amount))
+            await db.commit()
+            return cursor.lastrowid
+        except aiosqlite.IntegrityError as e:
+            raise DuplicateRegistrationError(str(e)) from e
 
 async def get_registration(registration_id):
     async with aiosqlite.connect(DB_PATH) as db:

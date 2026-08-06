@@ -75,6 +75,7 @@ def get_edit_fields_kb(event_id):
         [InlineKeyboardButton(text="📍 Место", callback_data=f"edit_location_{event_id}")],
         [InlineKeyboardButton(text="📅 Дата", callback_data=f"edit_date_time_{event_id}")],
         [InlineKeyboardButton(text="💰 Цена", callback_data=f"edit_price_{event_id}")],
+        [InlineKeyboardButton(text="👥 Лимит мест", callback_data=f"edit_capacity_{event_id}")],
         [InlineKeyboardButton(text="🖼 Фото", callback_data=f"edit_photo_id_{event_id}")],
         [InlineKeyboardButton(text="🔗 Ссылка", callback_data=f"edit_join_link_{event_id}")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="start_edit")]

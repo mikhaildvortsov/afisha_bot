@@ -112,8 +112,18 @@ async def create_tables():
                 value TEXT
             )
         ''')
+
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS admins (
+                telegram_id INTEGER PRIMARY KEY,
+                username TEXT,
+                full_name TEXT,
+                added_by INTEGER,
+                date_added TIMESTAMP
+            )
+        ''')
         await db.commit()
-    
+
     # Initialize settings
     await init_settings()
 
@@ -396,3 +406,45 @@ async def get_event_participants(event_id):
             WHERE r.event_id = ? AND r.status = 'approved'
         ''', (event_id,)) as cursor:
             return await cursor.fetchall()
+
+async def get_admin_ids():
+    """ID администраторов из БД. Суперадмины хранятся в переменных окружения."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute('SELECT telegram_id FROM admins') as cursor:
+            return [row[0] for row in await cursor.fetchall()]
+
+async def get_admins():
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            'SELECT * FROM admins ORDER BY date_added'
+        ) as cursor:
+            return await cursor.fetchall()
+
+async def add_admin(telegram_id, username, full_name, added_by):
+    """Возвращает False, если админ уже был добавлен."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await db.execute(
+                'INSERT INTO admins (telegram_id, username, full_name, added_by, date_added) '
+                'VALUES (?, ?, ?, ?, ?)',
+                (telegram_id, username, full_name, added_by, datetime.datetime.now())
+            )
+            await db.commit()
+            return True
+        except aiosqlite.IntegrityError:
+            return False
+
+async def remove_admin(telegram_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute('DELETE FROM admins WHERE telegram_id = ?', (telegram_id,))
+        await db.commit()
+        return cursor.rowcount > 0
+
+async def get_admin(telegram_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            'SELECT * FROM admins WHERE telegram_id = ?', (telegram_id,)
+        ) as cursor:
+            return await cursor.fetchone()

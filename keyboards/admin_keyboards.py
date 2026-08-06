@@ -18,13 +18,36 @@ def get_check_payment_keyboard(registration_id: int):
     ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-def get_admin_main_kb():
+def get_admin_main_kb(is_super=False):
     keyboard = [
         [KeyboardButton(text=txt.BTN_NEW_EVENT), KeyboardButton(text=txt.BTN_DELETE_EVENT)],
         [KeyboardButton(text=txt.BTN_MY_EVENTS_LIST), KeyboardButton(text=txt.BTN_STATS)],
         [KeyboardButton(text=txt.BTN_GUEST_LISTS), KeyboardButton(text=txt.BTN_SETTINGS)]
     ]
+    if is_super:
+        keyboard.append([KeyboardButton(text=txt.BTN_ADMINS)])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+def get_admins_keyboard(admins, super_admin_ids):
+    """Список админов с кнопками удаления. Суперадминов удалять нельзя."""
+    buttons = []
+    for admin in admins:
+        if admin['telegram_id'] in super_admin_ids:
+            continue
+        name = admin['full_name'] or str(admin['telegram_id'])
+        buttons.append([InlineKeyboardButton(
+            text=f"🗑 {name}",
+            callback_data=f"rmadmin_{admin['telegram_id']}"
+        )])
+    buttons.append([InlineKeyboardButton(text="➕ Добавить администратора", callback_data="add_admin")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_confirm_remove_admin_kb(telegram_id):
+    buttons = [[
+        InlineKeyboardButton(text="✅ Удалить", callback_data=f"rmadmin_yes_{telegram_id}"),
+        InlineKeyboardButton(text="❌ Отмена", callback_data="rmadmin_no")
+    ]]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_settings_keyboard():
     keyboard = [

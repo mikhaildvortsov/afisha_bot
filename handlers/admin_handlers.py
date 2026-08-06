@@ -6,20 +6,23 @@ from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery
-from config import ADMIN_IDS
+from aiogram.types import Message, CallbackQuery, ReplyKeyboardRemove
+from config import SUPER_ADMIN_IDS
+from filters import IsAdmin, IsSuperAdmin, is_super_admin
 from keyboards.admin_keyboards import (
-    get_confirm_keyboard, 
-    get_admin_main_kb, 
-    get_delete_event_keyboard, 
-    get_view_guests_keyboard, 
+    get_confirm_keyboard,
+    get_admin_main_kb,
+    get_delete_event_keyboard,
+    get_view_guests_keyboard,
     get_back_to_events_list_keyboard,
     get_settings_keyboard,
     get_edit_list_btn,
     get_edit_event_list_kb,
-    get_edit_fields_kb
+    get_edit_fields_kb,
+    get_admins_keyboard,
+    get_confirm_remove_admin_kb
 )
-from database import add_event, update_registration_status, get_registration, get_users_count, get_active_events, delete_event, get_event_participants, get_event, get_all_users, get_bot_statistics, get_payment_text, update_payment_text, update_event_field, mark_user_blocked
+from database import add_event, update_registration_status, get_registration, get_users_count, get_active_events, delete_event, get_event_participants, get_event, get_all_users, get_bot_statistics, get_payment_text, update_payment_text, update_event_field, mark_user_blocked, get_admins, add_admin, remove_admin, get_admin, get_user
 import text_constants as txt
 from keyboards.user_keyboards import get_support_keyboard, get_event_keyboard
 
@@ -51,12 +54,16 @@ class AdminSupportStates(StatesGroup):
 class SettingsState(StatesGroup):
     waiting_for_payment_text = State()
 
-@router.message(Command("admin"), F.from_user.id.in_(ADMIN_IDS))
+class AdminManageState(StatesGroup):
+    waiting_for_new_admin = State()
+
+@router.message(Command("admin"), IsAdmin())
 async def admin_start(message: Message, state: FSMContext):
     await state.clear()
-    await message.answer(txt.ADMIN_PANEL_WELCOME, reply_markup=get_admin_main_kb())
+    is_super = await is_super_admin(message.from_user.id)
+    await message.answer(txt.ADMIN_PANEL_WELCOME, reply_markup=get_admin_main_kb(is_super))
 
-@router.message(F.text == txt.BTN_STATS, F.from_user.id.in_(ADMIN_IDS))
+@router.message(F.text == txt.BTN_STATS, IsAdmin())
 async def get_stats(message: Message, state: FSMContext):
     await state.clear()
     stats = await get_bot_statistics()
@@ -65,7 +72,7 @@ async def get_stats(message: Message, state: FSMContext):
 
     await message.answer(text, parse_mode="HTML")
 
-@router.message(F.text == txt.BTN_SETTINGS, F.from_user.id.in_(ADMIN_IDS))
+@router.message(F.text == txt.BTN_SETTINGS, IsAdmin())
 async def show_settings(message: Message):
     current_text = await get_payment_text()
     await message.answer(
@@ -73,13 +80,13 @@ async def show_settings(message: Message):
         reply_markup=get_settings_keyboard()
     )
 
-@router.callback_query(F.data == "edit_payment_text", F.from_user.id.in_(ADMIN_IDS))
+@router.callback_query(F.data == "edit_payment_text", IsAdmin())
 async def start_edit_payment_text(callback: CallbackQuery, state: FSMContext):
     await state.set_state(SettingsState.waiting_for_payment_text)
     await callback.message.answer(txt.PAYMENT_TEXT_PROMPT)
     await callback.answer()
 
-@router.message(SettingsState.waiting_for_payment_text, F.from_user.id.in_(ADMIN_IDS))
+@router.message(SettingsState.waiting_for_payment_text, IsAdmin())
 async def process_new_payment_text(message: Message, state: FSMContext):
     if not message.text:
         await message.answer(txt.PLEASE_SEND_TEXT)
@@ -89,7 +96,7 @@ async def process_new_payment_text(message: Message, state: FSMContext):
     await message.answer(txt.PAYMENT_TEXT_UPDATED)
     await state.clear()
 
-@router.message(F.text == txt.BTN_DELETE_EVENT, F.from_user.id.in_(ADMIN_IDS))
+@router.message(F.text == txt.BTN_DELETE_EVENT, IsAdmin())
 async def start_delete_event(message: Message, state: FSMContext):
     await state.clear()
     events = await get_active_events()
@@ -99,7 +106,7 @@ async def start_delete_event(message: Message, state: FSMContext):
 
     await message.answer(txt.CHOOSE_EVENT_DELETE, reply_markup=get_delete_event_keyboard(events))
 
-@router.callback_query(F.data.startswith("delete_event_"), F.from_user.id.in_(ADMIN_IDS))
+@router.callback_query(F.data.startswith("delete_event_"), IsAdmin())
 async def process_delete_event(callback: CallbackQuery):
     try:
         event_id = int(callback.data.split("_")[2])
@@ -113,7 +120,7 @@ async def process_delete_event(callback: CallbackQuery):
     await callback.message.answer(txt.EVENT_DELETED)
     await callback.answer()
 
-@router.callback_query(F.data.startswith("reply_support_"), F.from_user.id.in_(ADMIN_IDS))
+@router.callback_query(F.data.startswith("reply_support_"), IsAdmin())
 async def start_support_reply(callback: CallbackQuery, state: FSMContext):
     try:
         user_id = int(callback.data.split("_")[2])
@@ -126,7 +133,7 @@ async def start_support_reply(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer(txt.SUPPORT_REPLY_PROMPT)
     await callback.answer()
 
-@router.message(AdminSupportStates.waiting_for_reply, F.from_user.id.in_(ADMIN_IDS))
+@router.message(AdminSupportStates.waiting_for_reply, IsAdmin())
 async def send_support_reply(message: Message, state: FSMContext, bot: Bot):
     if not message.text:
         await message.answer(txt.PLEASE_SEND_TEXT)
@@ -148,8 +155,8 @@ async def send_support_reply(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
 
 # Фильтр на админа
-@router.message(Command("new_event"), F.from_user.id.in_(ADMIN_IDS))
-@router.message(F.text == txt.BTN_NEW_EVENT, F.from_user.id.in_(ADMIN_IDS))
+@router.message(Command("new_event"), IsAdmin())
+@router.message(F.text == txt.BTN_NEW_EVENT, IsAdmin())
 async def start_new_event(message: Message, state: FSMContext):
     await state.clear()
     await state.set_state(EventStates.waiting_for_title)
@@ -338,7 +345,7 @@ async def cancel_event_handler(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.answer()
 
-@router.callback_query(F.data.startswith("approve_"), F.from_user.id.in_(ADMIN_IDS))
+@router.callback_query(F.data.startswith("approve_"), IsAdmin())
 async def approve_payment(callback: CallbackQuery, bot: Bot):
     try:
         reg_id = int(callback.data.split("_")[1])
@@ -384,7 +391,7 @@ async def approve_payment(callback: CallbackQuery, bot: Bot):
 
     await callback.answer()
 
-@router.callback_query(F.data.startswith("reject_"), F.from_user.id.in_(ADMIN_IDS))
+@router.callback_query(F.data.startswith("reject_"), IsAdmin())
 async def reject_payment(callback: CallbackQuery, bot: Bot):
     try:
         reg_id = int(callback.data.split("_")[1])
@@ -421,7 +428,7 @@ async def reject_payment(callback: CallbackQuery, bot: Bot):
 
     await callback.answer()
 
-@router.message(F.text == txt.BTN_MY_EVENTS_LIST, F.from_user.id.in_(ADMIN_IDS))
+@router.message(F.text == txt.BTN_MY_EVENTS_LIST, IsAdmin())
 async def show_admin_events(message: Message, state: FSMContext):
     await state.clear()
     events = await get_active_events()
@@ -442,7 +449,7 @@ async def show_admin_events(message: Message, state: FSMContext):
 
     await message.answer(response_text, parse_mode="HTML", reply_markup=get_edit_list_btn())
 
-@router.message(F.text == txt.BTN_GUEST_LISTS, F.from_user.id.in_(ADMIN_IDS))
+@router.message(F.text == txt.BTN_GUEST_LISTS, IsAdmin())
 async def view_guests_list(message: Message, state: FSMContext):
     await state.clear()
     events = await get_active_events()
@@ -456,7 +463,7 @@ async def view_guests_list(message: Message, state: FSMContext):
         reply_markup=get_view_guests_keyboard(events)
     )
 
-@router.callback_query(F.data.startswith("view_guests_"), F.from_user.id.in_(ADMIN_IDS))
+@router.callback_query(F.data.startswith("view_guests_"), IsAdmin())
 async def show_guest_list(callback: CallbackQuery):
     try:
         event_id = int(callback.data.split("_")[2])
@@ -500,7 +507,7 @@ async def show_guest_list(callback: CallbackQuery):
 
     await callback.answer()
 
-@router.callback_query(F.data == "back_to_events_list", F.from_user.id.in_(ADMIN_IDS))
+@router.callback_query(F.data == "back_to_events_list", IsAdmin())
 async def back_to_events_list_handler(callback: CallbackQuery):
     events = await get_active_events()
     
@@ -515,7 +522,7 @@ async def back_to_events_list_handler(callback: CallbackQuery):
     )
     await callback.answer()
 
-@router.callback_query(F.data == "start_edit", F.from_user.id.in_(ADMIN_IDS))
+@router.callback_query(F.data == "start_edit", IsAdmin())
 async def start_edit_handler(callback: CallbackQuery):
     events = await get_active_events()
     if not events:
@@ -528,7 +535,7 @@ async def start_edit_handler(callback: CallbackQuery):
     )
     await callback.answer()
 
-@router.callback_query(F.data.startswith("edit_select_"), F.from_user.id.in_(ADMIN_IDS))
+@router.callback_query(F.data.startswith("edit_select_"), IsAdmin())
 async def select_event_to_edit(callback: CallbackQuery):
     try:
         event_id = int(callback.data.split("_")[2])
@@ -542,7 +549,7 @@ async def select_event_to_edit(callback: CallbackQuery):
     )
     await callback.answer()
 
-@router.callback_query(F.data.startswith("edit_"), F.from_user.id.in_(ADMIN_IDS))
+@router.callback_query(F.data.startswith("edit_"), IsAdmin())
 async def edit_field_handler(callback: CallbackQuery, state: FSMContext):
     # callback.data format: edit_{field}_{id}
     # But we also have "edit_select_" which is handled above. 
@@ -573,7 +580,7 @@ async def edit_field_handler(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer(txt.EDIT_FIELD_PROMPT.format(display_name=display_name))
     await callback.answer()
 
-@router.message(EditEventState.waiting_for_new_value, F.from_user.id.in_(ADMIN_IDS))
+@router.message(EditEventState.waiting_for_new_value, IsAdmin())
 async def process_new_field_value(message: Message, state: FSMContext):
     data = await state.get_data()
     event_id = data.get('editing_event_id')
@@ -643,3 +650,174 @@ async def process_new_field_value(message: Message, state: FSMContext):
     )
     await state.clear()
 
+
+
+# --- Управление администраторами (только для суперадминов) ---
+
+def _display_name(full_name, username, telegram_id):
+    name = full_name or (f"@{username}" if username else None) or str(telegram_id)
+    return name
+
+
+async def _render_admins(message: Message):
+    admins = await get_admins()
+    text = txt.ADMINS_HEADER
+
+    for super_id in SUPER_ADMIN_IDS:
+        text += txt.ADMINS_SUPER_LINE.format(name=super_id)
+
+    listed = [a for a in admins if a['telegram_id'] not in SUPER_ADMIN_IDS]
+    if listed:
+        for admin in listed:
+            username = f" (@{admin['username']})" if admin['username'] else ""
+            text += txt.ADMINS_LINE.format(
+                name=_display_name(admin['full_name'], admin['username'], admin['telegram_id']),
+                username=username
+            )
+        text += txt.ADMINS_HINT
+    else:
+        text += "\n" + txt.ADMINS_EMPTY
+
+    await message.answer(
+        text,
+        parse_mode="HTML",
+        reply_markup=get_admins_keyboard(admins, SUPER_ADMIN_IDS)
+    )
+
+
+@router.message(F.text == txt.BTN_ADMINS, IsSuperAdmin())
+async def show_admins(message: Message, state: FSMContext):
+    await state.clear()
+    await _render_admins(message)
+
+
+@router.callback_query(F.data == "add_admin", IsSuperAdmin())
+async def start_add_admin(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(AdminManageState.waiting_for_new_admin)
+    await callback.message.answer(txt.ADD_ADMIN_PROMPT)
+    await callback.answer()
+
+
+@router.message(AdminManageState.waiting_for_new_admin, Command("cancel"), IsSuperAdmin())
+async def cancel_add_admin(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(txt.ACTION_CANCELLED)
+
+
+@router.message(AdminManageState.waiting_for_new_admin, IsSuperAdmin())
+async def process_new_admin(message: Message, state: FSMContext, bot: Bot):
+    # Пересланное сообщение даёт и ID, и имя; иначе ждём ID числом.
+    if message.forward_from:
+        new_id = message.forward_from.id
+        username = message.forward_from.username
+        full_name = message.forward_from.full_name
+    elif message.forward_sender_name:
+        await message.answer(txt.ADD_ADMIN_FORWARD_HIDDEN)
+        return
+    else:
+        raw = (message.text or "").strip()
+        if not raw.isdigit():
+            await message.answer(txt.ADD_ADMIN_BAD_ID)
+            return
+        new_id = int(raw)
+        username = None
+        full_name = None
+
+    if new_id in SUPER_ADMIN_IDS:
+        await message.answer(txt.ADD_ADMIN_SELF)
+        await state.clear()
+        return
+
+    # Профиль из базы пользователей — если человек уже запускал бота.
+    if not full_name:
+        user = await get_user(new_id)
+        if user:
+            username = user['username']
+            full_name = user['full_name']
+
+    name = _display_name(full_name, username, new_id)
+    added = await add_admin(new_id, username, full_name, message.from_user.id)
+
+    if not added:
+        await message.answer(txt.ADD_ADMIN_ALREADY.format(name=name))
+        await state.clear()
+        return
+
+    await message.answer(txt.ADD_ADMIN_OK.format(name=name))
+    await state.clear()
+
+    try:
+        await bot.send_message(new_id, txt.ADD_ADMIN_NOTIFY)
+    except TelegramForbiddenError:
+        logger.info("Новый админ %s не запускал бота — уведомление не доставлено", new_id)
+    except Exception as e:
+        logger.warning("Не удалось уведомить нового админа %s: %s", new_id, e)
+
+    await _render_admins(message)
+
+
+@router.callback_query(F.data.startswith("rmadmin_yes_"), IsSuperAdmin())
+async def confirm_remove_admin(callback: CallbackQuery, bot: Bot):
+    try:
+        target_id = int(callback.data.split("_")[2])
+    except (ValueError, IndexError):
+        await callback.answer(txt.ERROR_DATA, show_alert=True)
+        return
+
+    if target_id in SUPER_ADMIN_IDS:
+        await callback.answer(txt.REMOVE_ADMIN_PROTECTED, show_alert=True)
+        return
+
+    admin = await get_admin(target_id)
+    name = _display_name(
+        admin['full_name'] if admin else None,
+        admin['username'] if admin else None,
+        target_id
+    )
+
+    await remove_admin(target_id)
+    await callback.message.edit_text(txt.REMOVE_ADMIN_OK.format(name=name))
+    await callback.answer()
+
+    try:
+        await bot.send_message(target_id, txt.REMOVE_ADMIN_NOTIFY, reply_markup=ReplyKeyboardRemove())
+    except Exception as e:
+        logger.info("Не удалось уведомить снятого админа %s: %s", target_id, e)
+
+    await _render_admins(callback.message)
+
+
+@router.callback_query(F.data == "rmadmin_no", IsSuperAdmin())
+async def cancel_remove_admin(callback: CallbackQuery):
+    await callback.message.edit_text(txt.ACTION_CANCELLED)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("rmadmin_"), IsSuperAdmin())
+async def ask_remove_admin(callback: CallbackQuery):
+    parts = callback.data.split("_")
+    if parts[1] in ("yes", "no"):
+        return
+
+    try:
+        target_id = int(parts[1])
+    except (ValueError, IndexError):
+        await callback.answer(txt.ERROR_DATA, show_alert=True)
+        return
+
+    if target_id in SUPER_ADMIN_IDS:
+        await callback.answer(txt.REMOVE_ADMIN_PROTECTED, show_alert=True)
+        return
+
+    admin = await get_admin(target_id)
+    name = _display_name(
+        admin['full_name'] if admin else None,
+        admin['username'] if admin else None,
+        target_id
+    )
+
+    await callback.message.answer(
+        txt.REMOVE_ADMIN_CONFIRM.format(name=name),
+        reply_markup=get_confirm_remove_admin_kb(target_id)
+    )
+    await callback.answer()

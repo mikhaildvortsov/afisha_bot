@@ -7,7 +7,7 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from config import ADMIN_IDS
+from filters import get_all_admin_ids, is_admin
 from database import (
     add_user, get_active_events, get_event, create_registration, update_user_email, get_user,
     get_user_registrations, cancel_registration, is_user_registered, get_payment_text,
@@ -83,7 +83,7 @@ async def finalize_registration(message_obj: Message, state: FSMContext, bot: Bo
 
         user_display = f"@{username}" if username else full_name
         
-        for admin_id in ADMIN_IDS:
+        for admin_id in await get_all_admin_ids():
             try:
                 await bot.send_message(
                     admin_id,
@@ -116,7 +116,7 @@ async def command_start(message: Message, state: FSMContext):
         full_name=message.from_user.full_name
     )
 
-    if message.from_user.id in ADMIN_IDS:
+    if await is_admin(message.from_user.id):
         await message.answer(
             txt.WELCOME_ADMIN,
             reply_markup=get_admin_main_kb()
@@ -155,7 +155,7 @@ async def process_support_message(message: Message, state: FSMContext, bot: Bot)
     )
     
     # Отправляем админу
-    for admin_id in ADMIN_IDS:
+    for admin_id in await get_all_admin_ids():
         try:
             await bot.send_message(
                 chat_id=admin_id,
@@ -277,7 +277,7 @@ async def process_cancel_registration(callback: CallbackQuery, bot: Bot):
             title=event['title']
         )
 
-        for admin_id in ADMIN_IDS:
+        for admin_id in await get_all_admin_ids():
             try:
                 await bot.send_message(chat_id=admin_id, text=msg_text, parse_mode="HTML")
             except Exception as e:
@@ -425,7 +425,7 @@ async def process_receipt(message: Message, state: FSMContext, bot: Bot):
         price=event['price']
     )
 
-    for admin_id in ADMIN_IDS:
+    for admin_id in await get_all_admin_ids():
         try:
             if is_document:
                 await bot.send_document(

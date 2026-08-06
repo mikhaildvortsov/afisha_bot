@@ -292,6 +292,10 @@ class DuplicateRegistrationError(Exception):
     """Пользователь уже имеет активную (pending/approved) регистрацию на это мероприятие."""
 
 
+class EventFullError(Exception):
+    """На мероприятии больше нет свободных мест."""
+
+
 async def create_registration(telegram_id, event_id, receipt_photo_id=None, status='pending', amount=0):
     async with aiosqlite.connect(DB_PATH) as db:
         # Get internal user id
@@ -302,11 +306,24 @@ async def create_registration(telegram_id, event_id, receipt_photo_id=None, stat
         internal_user_id = user_row[0]
 
         try:
+            # INSERT ... SELECT ... WHERE проверяет лимит мест и выполняет вставку одним
+            # атомарным оператором — SQLite сериализует запись, поэтому два одновременных
+            # запроса не могут оба пройти проверку "мест ещё < capacity" и превысить лимит.
             cursor = await db.execute('''
                 INSERT INTO registrations (user_id, event_id, receipt_photo_id, status, amount)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (internal_user_id, event_id, receipt_photo_id, status, amount))
+                SELECT ?, ?, ?, ?, ?
+                WHERE (SELECT capacity FROM events WHERE id = ?) IS NULL
+                   OR (
+                        SELECT COUNT(*) FROM registrations
+                        WHERE event_id = ? AND status IN ('approved', 'pending')
+                   ) < (SELECT capacity FROM events WHERE id = ?)
+            ''', (
+                internal_user_id, event_id, receipt_photo_id, status, amount,
+                event_id, event_id, event_id
+            ))
             await db.commit()
+            if cursor.rowcount == 0:
+                raise EventFullError()
             return cursor.lastrowid
         except aiosqlite.IntegrityError as e:
             raise DuplicateRegistrationError(str(e)) from e

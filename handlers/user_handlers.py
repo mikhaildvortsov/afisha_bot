@@ -11,7 +11,7 @@ from config import ADMIN_IDS
 from database import (
     add_user, get_active_events, get_event, create_registration, update_user_email, get_user,
     get_user_registrations, cancel_registration, is_user_registered, get_payment_text,
-    get_event_registration_count, DuplicateRegistrationError,
+    get_event_registration_count, DuplicateRegistrationError, EventFullError,
 )
 from keyboards.user_keyboards import get_main_keyboard, get_event_keyboard, get_email_confirmation_keyboard, get_events_list_keyboard, get_my_event_keyboard
 from keyboards.admin_keyboards import get_check_payment_keyboard, get_admin_main_kb, get_support_reply_keyboard
@@ -67,6 +67,10 @@ async def finalize_registration(message_obj: Message, state: FSMContext, bot: Bo
             await create_registration(user_id, event_id, status="approved", amount=0)
         except DuplicateRegistrationError:
             await message_obj.answer(txt.DUPLICATE_REGISTRATION)
+            await state.clear()
+            return
+        except EventFullError:
+            await message_obj.answer(txt.EVENT_FULL)
             await state.clear()
             return
 
@@ -397,6 +401,10 @@ async def process_receipt(message: Message, state: FSMContext, bot: Bot):
         )
     except DuplicateRegistrationError:
         await message.answer(txt.DUPLICATE_REGISTRATION)
+        await state.clear()
+        return
+    except EventFullError:
+        await message.answer(txt.EVENT_FULL)
         await state.clear()
         return
 

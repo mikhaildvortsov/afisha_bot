@@ -7,7 +7,7 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from filters import get_all_admin_ids, is_admin
+from filters import get_all_admin_ids, is_admin, is_super_admin
 from database import (
     add_user, get_active_events, get_event, create_registration, update_user_email, get_user,
     get_user_registrations, cancel_registration, is_user_registered, get_payment_text,
@@ -119,7 +119,7 @@ async def command_start(message: Message, state: FSMContext):
     if await is_admin(message.from_user.id):
         await message.answer(
             txt.WELCOME_ADMIN,
-            reply_markup=get_admin_main_kb()
+            reply_markup=get_admin_main_kb(await is_super_admin(message.from_user.id))
         )
     else:
         await message.answer(

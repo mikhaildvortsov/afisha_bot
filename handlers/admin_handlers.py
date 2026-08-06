@@ -279,7 +279,10 @@ async def save_event_handler(callback: CallbackQuery, state: FSMContext, bot: Bo
     data = await state.get_data()
     event_id = await add_event(data)
     await callback.message.edit_reply_markup(reply_markup=None)
-    await callback.message.answer(txt.EVENT_PUBLISHED, reply_markup=get_admin_main_kb())
+    await callback.message.answer(
+        txt.EVENT_PUBLISHED,
+        reply_markup=get_admin_main_kb(await is_super_admin(callback.from_user.id))
+    )
 
     users = await get_all_users()
 

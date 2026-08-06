@@ -38,13 +38,15 @@ async def main():
         return
 
     logging.info("Бот запущен...")
-    
-    # Запуск polling, пропуская старые апдейты
-    await bot.delete_webhook(drop_pending_updates=True)
+
     try:
+        # Запуск polling, пропуская старые апдейты
+        await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     except Exception as e:
         logging.error(f"Ошибка в работе бота: {e}")
+    finally:
+        await bot.session.close()
 
 if __name__ == "__main__":
     try:

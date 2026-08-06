@@ -100,6 +100,30 @@ async def finalize_registration(message_obj: Message, state: FSMContext, bot: Bo
             
         await message_obj.answer(text_to_send, parse_mode="HTML")
 
+@router.message(CommandStart())
+async def command_start(message: Message, state: FSMContext):
+    # /start должен всегда сбрасывать любое "зависшее" состояние (например, режим поддержки
+    # или незавершённую регистрацию), а не попадать в текущий state-хендлер как обычный текст.
+    await state.clear()
+
+    await add_user(
+        telegram_id=message.from_user.id,
+        username=message.from_user.username,
+        full_name=message.from_user.full_name
+    )
+
+    if message.from_user.id in ADMIN_IDS:
+        await message.answer(
+            txt.WELCOME_ADMIN,
+            reply_markup=get_admin_main_kb()
+        )
+    else:
+        await message.answer(
+            txt.WELCOME_TEXT,
+            reply_markup=get_main_keyboard()
+        )
+
+
 class SupportStates(StatesGroup):
     waiting_for_message = State()
 
@@ -111,6 +135,10 @@ async def contact_support_handler(callback: CallbackQuery, state: FSMContext):
 
 @router.message(SupportStates.waiting_for_message)
 async def process_support_message(message: Message, state: FSMContext, bot: Bot):
+    if not message.text:
+        await message.answer(txt.PLEASE_SEND_TEXT)
+        return
+
     user_message = message.text
     full_name = message.from_user.full_name
     username = f"@{message.from_user.username}" if message.from_user.username else full_name
@@ -136,25 +164,6 @@ async def process_support_message(message: Message, state: FSMContext, bot: Bot)
 
     await message.answer(txt.SUPPORT_MESSAGE_SENT)
     await state.clear()
-
-@router.message(CommandStart())
-async def command_start(message: Message):
-    await add_user(
-        telegram_id=message.from_user.id,
-        username=message.from_user.username,
-        full_name=message.from_user.full_name
-    )
-    
-    if message.from_user.id in ADMIN_IDS:
-        await message.answer(
-            txt.WELCOME_ADMIN,
-            reply_markup=get_admin_main_kb()
-        )
-    else:
-        await message.answer(
-            txt.WELCOME_TEXT,
-            reply_markup=get_main_keyboard()
-        )
 
 @router.message(F.text == txt.BTN_AFISHA)
 async def show_afisha(message: Message):
@@ -276,7 +285,12 @@ async def dummy_callback_handler(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("enroll_"))
 async def process_enroll(callback: CallbackQuery, state: FSMContext, bot: Bot):
-    event_id = int(callback.data.split("_")[1])
+    try:
+        event_id = int(callback.data.split("_")[1])
+    except (ValueError, IndexError):
+        await callback.answer(txt.ERROR_DATA, show_alert=True)
+        return
+
     event = await get_event(event_id)
     
     if not event:
@@ -329,6 +343,10 @@ async def change_email_handler(callback: CallbackQuery, state: FSMContext):
 
 @router.message(RegistrationStates.waiting_for_email)
 async def process_email(message: Message, state: FSMContext, bot: Bot):
+    if not message.text:
+        await message.answer(txt.EMAIL_INVALID)
+        return
+
     email = message.text.strip()
 
     if not EMAIL_REGEX.match(email):

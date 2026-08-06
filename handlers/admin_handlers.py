@@ -52,7 +52,8 @@ class SettingsState(StatesGroup):
     waiting_for_payment_text = State()
 
 @router.message(Command("admin"), F.from_user.id.in_(ADMIN_IDS))
-async def admin_start(message: Message):
+async def admin_start(message: Message, state: FSMContext):
+    await state.clear()
     await message.answer(txt.ADMIN_PANEL_WELCOME, reply_markup=get_admin_main_kb())
 
 @router.message(F.text == txt.BTN_STATS, F.from_user.id.in_(ADMIN_IDS))
@@ -80,8 +81,11 @@ async def start_edit_payment_text(callback: CallbackQuery, state: FSMContext):
 
 @router.message(SettingsState.waiting_for_payment_text, F.from_user.id.in_(ADMIN_IDS))
 async def process_new_payment_text(message: Message, state: FSMContext):
-    new_text = message.text
-    await update_payment_text(new_text)
+    if not message.text:
+        await message.answer(txt.PLEASE_SEND_TEXT)
+        return
+
+    await update_payment_text(message.text)
     await message.answer(txt.PAYMENT_TEXT_UPDATED)
     await state.clear()
 
@@ -97,7 +101,12 @@ async def start_delete_event(message: Message, state: FSMContext):
 
 @router.callback_query(F.data.startswith("delete_event_"), F.from_user.id.in_(ADMIN_IDS))
 async def process_delete_event(callback: CallbackQuery):
-    event_id = int(callback.data.split("_")[2])
+    try:
+        event_id = int(callback.data.split("_")[2])
+    except (ValueError, IndexError):
+        await callback.answer(txt.ERROR_DATA, show_alert=True)
+        return
+
     await delete_event(event_id)
 
     await callback.message.edit_reply_markup(reply_markup=None)
@@ -106,7 +115,12 @@ async def process_delete_event(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("reply_support_"), F.from_user.id.in_(ADMIN_IDS))
 async def start_support_reply(callback: CallbackQuery, state: FSMContext):
-    user_id = int(callback.data.split("_")[2])
+    try:
+        user_id = int(callback.data.split("_")[2])
+    except (ValueError, IndexError):
+        await callback.answer(txt.ERROR_DATA, show_alert=True)
+        return
+
     await state.update_data(reply_user_id=user_id)
     await state.set_state(AdminSupportStates.waiting_for_reply)
     await callback.message.answer(txt.SUPPORT_REPLY_PROMPT)
@@ -114,6 +128,10 @@ async def start_support_reply(callback: CallbackQuery, state: FSMContext):
 
 @router.message(AdminSupportStates.waiting_for_reply, F.from_user.id.in_(ADMIN_IDS))
 async def send_support_reply(message: Message, state: FSMContext, bot: Bot):
+    if not message.text:
+        await message.answer(txt.PLEASE_SEND_TEXT)
+        return
+
     data = await state.get_data()
     user_id = data.get('reply_user_id')
 
@@ -139,30 +157,50 @@ async def start_new_event(message: Message, state: FSMContext):
 
 @router.message(EventStates.waiting_for_title)
 async def process_title(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer(txt.PLEASE_SEND_TEXT)
+        return
+
     await state.update_data(title=message.text)
     await state.set_state(EventStates.waiting_for_description)
     await message.answer(txt.NEW_EVENT_DESC_PROMPT)
 
 @router.message(EventStates.waiting_for_description)
 async def process_description(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer(txt.PLEASE_SEND_TEXT)
+        return
+
     await state.update_data(description=message.text)
     await state.set_state(EventStates.waiting_for_location)
     await message.answer(txt.NEW_EVENT_LOCATION_PROMPT)
 
 @router.message(EventStates.waiting_for_location)
 async def process_location(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer(txt.PLEASE_SEND_TEXT)
+        return
+
     await state.update_data(location=message.text)
     await state.set_state(EventStates.waiting_for_datetime)
     await message.answer(txt.NEW_EVENT_DATETIME_PROMPT)
 
 @router.message(EventStates.waiting_for_datetime)
 async def process_datetime(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer(txt.PLEASE_SEND_TEXT)
+        return
+
     await state.update_data(date_time=message.text)
     await state.set_state(EventStates.waiting_for_price)
     await message.answer(txt.NEW_EVENT_PRICE_PROMPT)
 
 @router.message(EventStates.waiting_for_price)
 async def process_price(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer(txt.INVALID_NUMBER)
+        return
+
     try:
         price = float(message.text.replace(',', '.'))
         if price < 0:
@@ -177,9 +215,12 @@ async def process_price(message: Message, state: FSMContext):
 
 @router.message(EventStates.waiting_for_capacity)
 async def process_capacity(message: Message, state: FSMContext):
-    raw = message.text.strip()
+    if not message.text:
+        await message.answer(txt.INVALID_NUMBER)
+        return
+
     try:
-        capacity = int(raw)
+        capacity = int(message.text.strip())
         if capacity < 0:
             raise ValueError
     except ValueError:
@@ -199,6 +240,10 @@ async def process_photo(message: Message, state: FSMContext):
 
 @router.message(EventStates.waiting_for_link)
 async def process_link(message: Message, state: FSMContext):
+    if not message.text:
+        await message.answer(txt.PLEASE_SEND_TEXT)
+        return
+
     link = message.text.strip()
     join_link = link if link != "-" else None
     await state.update_data(join_link=join_link)
@@ -548,6 +593,9 @@ async def process_new_field_value(message: Message, state: FSMContext):
             await message.answer(txt.PLEASE_SEND_PHOTO)
             return
     elif field_name == "price":
+        if not message.text:
+            await message.answer(txt.INVALID_NUMBER)
+            return
         try:
             new_value = float(message.text.replace(',', '.'))
             if new_value < 0:
@@ -556,6 +604,9 @@ async def process_new_field_value(message: Message, state: FSMContext):
             await message.answer(txt.INVALID_NUMBER)
             return
     elif field_name == "capacity":
+        if not message.text:
+            await message.answer(txt.INVALID_NUMBER)
+            return
         try:
             capacity = int(message.text.strip())
             if capacity < 0:
@@ -565,6 +616,9 @@ async def process_new_field_value(message: Message, state: FSMContext):
             return
         new_value = capacity if capacity > 0 else None
     elif field_name == "join_link":
+        if not message.text:
+            await message.answer(txt.PLEASE_SEND_TEXT)
+            return
         new_value = message.text.strip()
         if new_value == "-":
             new_value = None
